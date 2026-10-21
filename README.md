@@ -94,15 +94,30 @@ nohup python bot.py &
 ## Features
 
 - **True anonymity** — sender info is never exposed to channel readers
+- **Automatic Media Blurring** — photos and every frame of videos are strongly blurred before publishing to protect privacy
+- **Fail-safe privacy** — original unblurred media is NEVER published; if processing fails, publication is aborted
 - **Rate limiting** — 30 s cooldown per user to prevent spam
 - **Multi-format** — photos, videos, documents, and plain text
 - **Optional descriptions** — `/skip` to post media only
 - **HTML-escaped captions** — prevents formatting injection
 
+## Video Processing Requirements
+
+Video frame blurring requires **FFmpeg**. The bot automatically discovers FFmpeg via:
+1. System PATH (`ffmpeg`), or
+2. `imageio-ffmpeg` package (included in `requirements.txt`).
+
+On Windows, you can install FFmpeg system-wide via:
+```powershell
+winget install Gyan.FFmpeg.Essentials
+```
+
 ## Privacy notes
 
 - No database is used; the bot stores only an in-memory rate-limit cache
 - User IDs are never logged to disk
+- Original photos and videos are processed in temporary storage and deleted immediately after processing/publishing
+- Unblurred media is never forwarded, copied, or published to the channel
 - The bot operator (whoever runs it) can see sender info in Telegram logs,
   but **channel readers** see only the anonymous post
 

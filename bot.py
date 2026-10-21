@@ -32,6 +32,8 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message
 
+from media_processor import process_and_publish_media
+
 # ── Configuration ─────────────────────────────────────────────────────────────
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -55,6 +57,7 @@ log = logging.getLogger("anon_dorm_bot")
 HEADER = "📋 <b>Anonymous Report</b>\n────────────────\n"
 RATE_LIMIT = 30          # seconds between submissions per user
 SKIP_KEYWORD = "/skip"
+FAIL_SAFE_ERROR = "⚠️ Media processing failed, so your report was not published. Please try again."
 
 WELCOME = f"""
 📸 <b>Anonymous Dormitory Report Bot</b>
@@ -152,7 +155,8 @@ async def cmd_help(message: Message):
 @dp.message(F.photo | F.video | F.document)
 async def handle_media(message: Message, state: FSMContext):
     """Receive a media item — post immediately if it has a caption, otherwise
-    ask for an optional description."""
+    ask for an optional description. All photos and videos are strongly blurred
+    before publishing. Original unblurred media is NEVER published."""
 
     # Throttle
     rl = _rate_limited(message.from_user.id)
@@ -165,19 +169,42 @@ async def handle_media(message: Message, state: FSMContext):
         await message.answer("🚫 Please send items one at a time — albums are not supported yet.")
         return
 
+    # Identify media type & file_id
+    if message.photo:
+        media_type = "photo"
+        file_id = message.photo[-1].file_id
+    elif message.video:
+        media_type = "video"
+        file_id = message.video.file_id
+    else:
+        media_type = "document"
+        file_id = message.document.file_id
+
     # Media with existing caption → post directly
     if message.caption:
         caption = f"{HEADER}{html.escape(message.caption)}"
-        await _copy_to_channel(message.chat.id, message.message_id, caption)
-        await message.answer(
-            "✅ Your report was posted anonymously. Thank you for helping improve our dorm!"
-        )
+        if media_type in ("photo", "video"):
+            try:
+                await process_and_publish_media(bot, CHANNEL_ID, media_type, file_id, caption)
+                await message.answer(
+                    "✅ Your report was posted anonymously. Thank you for helping improve our dorm!"
+                )
+            except Exception as exc:
+                log.error("Failed to process and publish %s report: %s", media_type, exc)
+                await message.answer(FAIL_SAFE_ERROR)
+        else:
+            await _copy_to_channel(message.chat.id, message.message_id, caption)
+            await message.answer(
+                "✅ Your report was posted anonymously. Thank you for helping improve our dorm!"
+            )
         return
 
     # No caption → ask for optional description
     await state.update_data(
         src_chat=message.chat.id,
         src_msg=message.message_id,
+        media_type=media_type,
+        file_id=file_id,
     )
     await state.set_state(Form.description)
     await message.answer(
@@ -192,8 +219,21 @@ async def handle_media(message: Message, state: FSMContext):
 async def desc_skip(message: Message, state: FSMContext):
     """User chose to skip the description — post media only."""
     data = await state.get_data()
-    await _copy_to_channel(data["src_chat"], data["src_msg"], HEADER.strip())
-    await message.answer("✅ Your report was posted anonymously. Thank you!")
+    media_type = data.get("media_type")
+    file_id = data.get("file_id")
+    caption = HEADER.strip()
+
+    if media_type in ("photo", "video"):
+        try:
+            await process_and_publish_media(bot, CHANNEL_ID, media_type, file_id, caption)
+            await message.answer("✅ Your report was posted anonymously. Thank you!")
+        except Exception as exc:
+            log.error("Failed to process and publish %s report on skip: %s", media_type, exc)
+            await message.answer(FAIL_SAFE_ERROR)
+    else:
+        await _copy_to_channel(data["src_chat"], data["src_msg"], caption)
+        await message.answer("✅ Your report was posted anonymously. Thank you!")
+
     await state.clear()
 
 
@@ -201,9 +241,21 @@ async def desc_skip(message: Message, state: FSMContext):
 async def desc_received(message: Message, state: FSMContext):
     """User typed a description — attach it to the media and post."""
     data = await state.get_data()
+    media_type = data.get("media_type")
+    file_id = data.get("file_id")
     caption = f"{HEADER}{html.escape(message.text)}"
-    await _copy_to_channel(data["src_chat"], data["src_msg"], caption)
-    await message.answer("✅ Your report was posted anonymously. Thank you!")
+
+    if media_type in ("photo", "video"):
+        try:
+            await process_and_publish_media(bot, CHANNEL_ID, media_type, file_id, caption)
+            await message.answer("✅ Your report was posted anonymously. Thank you!")
+        except Exception as exc:
+            log.error("Failed to process and publish %s report with description: %s", media_type, exc)
+            await message.answer(FAIL_SAFE_ERROR)
+    else:
+        await _copy_to_channel(data["src_chat"], data["src_msg"], caption)
+        await message.answer("✅ Your report was posted anonymously. Thank you!")
+
     await state.clear()
 
 
